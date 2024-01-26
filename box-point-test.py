@@ -125,21 +125,32 @@ def calculate_gradients(boxes, raw_points, idx, target):
     fp_per_dim = inside_fp * (1-target)
 
     false_per_dim = fn_per_dim + fp_per_dim
-    number_of_false_dims = torch.sum(false_per_dim, dim=-1, keepdim=True)
+    all_dimensions_wrong = torch.min(false_per_dim, dim=-1, keepdim=True)[0]
 
     dl = torch.abs(l-points)
     dr = torch.abs(r-points)
 
     closer_to_l_than_r = dl < dr
 
-    r_scale_fp = number_of_false_dims*torch.rand_like(fp_per_dim)*(fp_per_dim * ~closer_to_l_than_r)
-    l_scale_fp = number_of_false_dims*torch.rand_like(fp_per_dim)*(fp_per_dim * closer_to_l_than_r)
+    r_scale_fp = all_dimensions_wrong*(fp_per_dim * ~closer_to_l_than_r)
+    l_scale_fp = all_dimensions_wrong*(fp_per_dim * closer_to_l_than_r)
 
-    r_scale_fn = number_of_false_dims*torch.rand_like(fn_per_dim)*(fn_per_dim * ~closer_to_l_than_r)
-    l_scale_fn = number_of_false_dims*torch.rand_like(fn_per_dim)*(fn_per_dim * closer_to_l_than_r)
+    r_scale_fn = (fn_per_dim * ~closer_to_l_than_r)
+    l_scale_fn = (fn_per_dim * closer_to_l_than_r)
 
-    r_loss = torch.mean(torch.sum(torch.abs(r_scale_fp * (r_fp - points)), dim=(1,2)) + torch.sum(torch.abs(r_scale_fn * (r_fn - points)), dim=(1,2)))
-    l_loss = torch.mean(torch.sum(torch.abs(l_scale_fp * (l_fp - points)), dim=(1,2)) + torch.sum(torch.abs(l_scale_fn * (l_fn - points)), dim=(1,2)))
+    d_r_fp = r_scale_fp*torch.abs(r_fp - points)
+    d_l_fp = l_scale_fp*torch.abs(l_fp - points)
+    d_r_fn = r_scale_fn*torch.abs(r_fn - points)
+    d_l_fn = l_scale_fn * torch.abs(l_fn - points)
+
+    w_r_fp = nn.functional.softmin(d_r_fp, dim=-1)
+    w_r_fn = nn.functional.softmin(d_r_fn, dim=-1)
+    w_l_fp = nn.functional.softmin(d_l_fp, dim=-1)
+    w_l_fn = nn.functional.softmin(d_l_fn, dim=-1)
+
+    r_loss = torch.mean(torch.sum(w_r_fp*d_r_fp, dim=(1,2)) + torch.sum(w_r_fn*d_r_fn, dim=(1,2)))
+    l_loss = torch.mean(torch.sum(w_l_fp*d_l_fp, dim=(1,2)) + torch.sum(w_l_fn* d_l_fn, dim=(1,2)))
+
     return l_loss + r_loss
 
 def plot_boxes(ax, boxes, box_colors):
@@ -150,6 +161,8 @@ def plot_boxes(ax, boxes, box_colors):
     for i in range(boxes.shape[0]):
         ax.add_patch(Rectangle(l[i].detach().numpy(), widths[i, 0].item(), widths[i, 1].item(), linewidth=1, edgecolor=box_colors.colors[i], facecolor='none'))
     xl,yl = zip(*l.detach().numpy())
+    #plt.xlim((-0.1,1.1))
+    #plt.ylim((-0.1, 1.1))
     ax.plot(xl, yl, ".")
     xr, yr = zip(*r.detach().numpy())
     ax.plot(xr, yr, ".")
@@ -186,8 +199,8 @@ def main():
     points = Points()
     model = BoxWithMemberships(num_classes)
 
-    points_optimizer = torch.optim.Adam(points.parameters(), lr=1e-3)
-    box_optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
+    points_optimizer = torch.optim.SGD(points.parameters(), lr=0.5, momentum=0.9)
+    box_optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
 
     Xtrain, ytrain = zip(*dataset)
 
